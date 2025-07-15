@@ -22,46 +22,52 @@
       | community.general.json_query('[?spec.nodeTemplate.ansible.ansibleVars.edpm_container_registry_logins] | [0]')
       }}
 
-- name: Display which osdpns we're using
+- name: Handle registry authentication
+  when: _cifmw_update_osdpns_info is not none
+  block:
+    - name: Display which osdpns we're using
+      ansible.builtin.debug:
+        msg: "Found OSDPNS '{{ _cifmw_update_osdpns_info.metadata.name }}' with registry login info."
+
+    - name: Determine registry
+      ansible.builtin.set_fact:
+        cifmw_update_login_registry: >-
+          {{
+          (cifmw_ci_gen_kustomize_values_ooi_image.split('/')[0])
+          if cifmw_ci_gen_kustomize_values_ooi_image is defined
+          else 'quay.io'
+          | trim
+          }}
+
+    - name: Extract credentials for the registry if they exist
+      ansible.builtin.set_fact:
+        cifmw_update_login_username: "{{ login_username }}"
+        cifmw_update_login_password: "{{ login_dict[login_username] }}"
+      vars:
+        login_dict: >-
+          {{
+          _cifmw_update_osdpns_info.spec.nodeTemplate.ansible.ansibleVars.
+          edpm_container_registry_logins.get(cifmw_update_login_registry, {})
+          }}
+        login_username: "{{ login_dict.keys()|list|first }}"
+      when:
+        - login_dict | length > 0
+        - cifmw_update_login_registry != 'quay.io'
+
+    - name: Log in to registry when needed
+      containers.podman.podman_login:
+        registry: "{{ cifmw_update_login_registry }}"
+        username: "{{ cifmw_update_login_username }}"
+        password: "{{ cifmw_update_login_password }}"
+      when:
+        - cifmw_update_login_username is defined
+        - cifmw_update_login_password is defined
+        - cifmw_update_login_registry != 'quay.io'
+
+- name: Notify that registry authentication is skipped
   ansible.builtin.debug:
-    msg: "Found OSDPNS named: '{{ _cifmw_update_osdpns_info.metadata.name }}'"
-
-- name: Determine registry
-  ansible.builtin.set_fact:
-    cifmw_update_login_registry: >-
-      {{
-      (cifmw_ci_gen_kustomize_values_ooi_image.split('/')[0])
-      if cifmw_ci_gen_kustomize_values_ooi_image is defined
-      else 'quay.io'
-      | trim
-      }}
-
-- name: Check if credentials exist
-  ansible.builtin.set_fact:
-    cifmw_update_login_username: "{{ login_username }}"
-    cifmw_update_login_password: "{{ login_dict[login_username] }}"
-  vars:
-    login_dict: >-
-      {{
-      _cifmw_update_osdpns_info.spec.nodeTemplate.ansible.ansibleVars.
-      edpm_container_registry_logins[cifmw_update_login_registry]
-      }}
-    login_username: "{{ login_dict.keys()|list|first }}"
-  when:
-    - _cifmw_update_osdpns_info.spec.nodeTemplate.ansible.ansibleVars.edpm_container_registry_logins is defined
-    - login_dict is defined
-    - login_dict|length > 0
-    - cifmw_update_login_registry != 'quay.io'
-
-- name: Log in to registry when needed
-  containers.podman.podman_login:
-    registry: "{{ cifmw_update_login_registry }}"
-    username: "{{ cifmw_update_login_username }}"
-    password: "{{ cifmw_update_login_password }}"
-  when:
-    - cifmw_update_login_username is defined
-    - cifmw_update_login_password is defined
-    - cifmw_update_login_registry != 'quay.io'
+    msg: "No OSDPNS with registry login info found; skipping registry authentication."
+  when: _cifmw_update_osdpns_info is none
 
 - name: Retrieve the openstackclient Pod
   kubernetes.core.k8s_info:
